@@ -4,15 +4,19 @@
 # on another app's custom URL scheme, and does the answer depend on the iOS version?
 #
 # Method. Two trivial apps. ProbeA calls open() exactly once. ProbeB owns the scheme
-# and logs a distinctive marker when it is handed a URL. Nothing in this experiment
-# taps anything, so the marker is the whole measurement:
+# and appends a marker line to a file inside its own container every time it is handed
+# a URL. Nothing in this experiment taps anything, so the marker is the whole
+# measurement:
 #
 #   marker present  -> the open completed on its own            -> no confirmation
 #   marker absent   -> something stopped it before ProbeB ran   -> confirmation
 #
-# A system-initiated `simctl openurl` runs first on every runtime as a negative
-# control, so an absent marker can never be blamed on a broken scheme registration
-# or on log capture that was not working.
+# The marker is a file, not a log line, so the result does not depend on a log stream
+# being attached at the right moment or on a predicate matching.
+#
+# Every runtime first runs a system-initiated `simctl openurl` as a negative control,
+# which must always reach ProbeB. If the control fails, that runtime is reported
+# INCONCLUSIVE, so a broken apparatus can never be misread as "the platform blocked it".
 
 set -uo pipefail
 
@@ -26,6 +30,8 @@ summary="$result_dir/PROBE-SUMMARY.txt"
 say() { printf '%s\n' "$*" | tee -a "$summary"; }
 
 runtimes="${PROBE_RUNTIMES:-iOS-18-6 iOS-26-2}"
+A_ID="com.example.probea"
+B_ID="com.example.probeb"
 
 cleanup() { rm -rf "$work_dir"; }
 trap cleanup EXIT
@@ -35,8 +41,6 @@ say "xcode: $(xcodebuild -version 2>/dev/null | head -1)"
 say "runtimes requested: ${runtimes}"
 say ""
 
-# Build both apps once. The simulator SDK slice is shared across runtimes and both
-# bundles declare MinimumOSVersion 15.2.
 build_app() {
   local name="$1" src="$2" plist="$3"
   local dir="$work_dir/$name.app"
@@ -53,6 +57,21 @@ build_app() {
 build_app ProbeA "$root_dir/AppA.swift" "$root_dir/AppA-Info.plist"
 build_app ProbeB "$root_dir/AppB.swift" "$root_dir/AppB-Info.plist"
 say ""
+
+# Read ProbeB's marker file out of its data container. Empty output means no marker.
+read_marker() {
+  local udid="$1" bundle="$2"
+  local c
+  c="$(xcrun simctl get_app_container "$udid" "$bundle" data 2>/dev/null)"
+  [[ -n "$c" && -f "$c/Documents/probe-marker.txt" ]] && cat "$c/Documents/probe-marker.txt"
+}
+clear_marker() {
+  local udid="$1" bundle="$2"
+  local c
+  c="$(xcrun simctl get_app_container "$udid" "$bundle" data 2>/dev/null)"
+  [[ -n "$c" ]] && rm -f "$c/Documents/probe-marker.txt"
+  return 0
+}
 
 overall=0
 for rt in $runtimes; do
@@ -71,63 +90,57 @@ print(m[-1] if m else "")')"
   xcrun simctl boot "$udid" >/dev/null 2>&1
   xcrun simctl bootstatus "$udid" -b >/dev/null 2>&1
 
-  xcrun simctl install "$udid" "$work_dir/ProbeA.app" >/dev/null 2>&1
-  xcrun simctl install "$udid" "$work_dir/ProbeB.app" >/dev/null 2>&1
-
-  log="$result_dir/logs/$rt.log"
-  xcrun simctl spawn "$udid" log stream --style compact \
-    --predicate 'processImagePath CONTAINS "Probe"' > "$log" 2>&1 &
-  log_pid=$!
-  sleep 3
+  ilog="$result_dir/logs/$rt-simctl.log"
+  { echo "== install ProbeA"; xcrun simctl install "$udid" "$work_dir/ProbeA.app" 2>&1
+    echo "== install ProbeB"; xcrun simctl install "$udid" "$work_dir/ProbeB.app" 2>&1
+  } > "$ilog"
 
   # ---- negative control: system-initiated open, must always reach ProbeB -------
-  xcrun simctl openurl "$udid" "probeb://control" >/dev/null 2>&1
-  sleep 5
-  control_hits="$(grep -c "PROBE_B_RECEIVED_URL\|PROBE_B_LAUNCHED" "$log" 2>/dev/null || true)"
-  control_hits="${control_hits//[^0-9]/}"; control_hits="${control_hits:-0}"
-  say "control_system_openurl_reached_appb=$([[ "$control_hits" -gt 0 ]] && echo true || echo false)"
+  { echo "== control openurl"; xcrun simctl openurl "$udid" "probeb://control" 2>&1; } >> "$ilog"
+  sleep 8
+  control_marker="$(read_marker "$udid" "$B_ID")"
+  if [[ -n "$control_marker" ]]; then control_ok=1; else control_ok=0; fi
+  say "control_system_openurl_reached_appb=$([[ $control_ok -eq 1 ]] && echo true || echo false)"
+  [[ -n "$control_marker" ]] && say "  control marker: $(printf '%s' "$control_marker" | tr '\n' ';')"
 
-  xcrun simctl terminate "$udid" com.example.probeb >/dev/null 2>&1
+  xcrun simctl terminate "$udid" "$B_ID" >/dev/null 2>&1
   sleep 2
-  : > "$log"
-  sleep 1
+  clear_marker "$udid" "$B_ID"
 
   # ---- the measurement: app-initiated open, nothing taps anything -------------
-  xcrun simctl launch --terminate-running-process \
-    --setenv PROBE_TARGET_URL "probeb://from-another-app" \
-    "$udid" com.example.probea >/dev/null 2>&1
+  { echo "== launch ProbeA"
+    xcrun simctl launch --terminate-running-process \
+      --setenv PROBE_TARGET_URL "probeb://from-another-app" "$udid" "$A_ID" 2>&1
+  } >> "$ilog"
   sleep 15
 
   xcrun simctl io "$udid" screenshot "$result_dir/screenshots/$rt.png" >/dev/null 2>&1
 
-  a_open="$(grep -o "PROBE_A open_accepted=[a-z]*" "$log" 2>/dev/null | tail -1 || true)"
-  a_can="$(grep -o "PROBE_A canOpenURL=[a-z]*" "$log" 2>/dev/null | tail -1 || true)"
-  b_hits="$(grep -c "PROBE_B_RECEIVED_URL\|PROBE_B_LAUNCHED" "$log" 2>/dev/null || true)"
-  b_hits="${b_hits//[^0-9]/}"; b_hits="${b_hits:-0}"
+  sender_marker="$(read_marker "$udid" "$A_ID")"
+  recv_marker="$(read_marker "$udid" "$B_ID")"
+  say "sender_ran=$([[ -n "$sender_marker" ]] && echo true || echo false)"
+  [[ -n "$sender_marker" ]] && say "  sender: $(printf '%s' "$sender_marker" | tr '\n' ';')"
+  say "receiver_marker=$([[ -n "$recv_marker" ]] && echo true || echo false)"
+  [[ -n "$recv_marker" ]] && say "  receiver: $(printf '%s' "$recv_marker" | tr '\n' ';')"
 
-  say "sender: ${a_can:-<no canOpenURL line>}"
-  say "sender: ${a_open:-<no open_accepted line>}"
-  say "receiver_marker_count=$b_hits"
-  if [[ "$control_hits" -gt 0 && "$b_hits" -gt 0 ]]; then
-    say "RESULT $rt: NO CONFIRMATION. The cross-app open reached the receiver with zero taps."
-  elif [[ "$control_hits" -gt 0 ]]; then
-    say "RESULT $rt: CONFIRMATION INTERPOSED. Control reached the receiver, the app-initiated open did not."
-  else
+  if [[ $control_ok -eq 0 ]]; then
     say "RESULT $rt: INCONCLUSIVE. The negative control failed, so this runtime measures nothing."
+    say "  simctl diagnostics:"; sed 's/^/    /' "$ilog" | tee -a "$summary"
     overall=1
+  elif [[ -z "$sender_marker" ]]; then
+    say "RESULT $rt: INCONCLUSIVE. The sender never ran, so nothing was measured."
+    say "  simctl diagnostics:"; sed 's/^/    /' "$ilog" | tee -a "$summary"
+    overall=1
+  elif [[ -n "$recv_marker" ]]; then
+    say "RESULT $rt: NO CONFIRMATION. The cross-app open reached the receiver with zero taps."
+  else
+    say "RESULT $rt: CONFIRMATION INTERPOSED. Control reached the receiver, the app-initiated open did not."
   fi
 
-  kill "$log_pid" 2>/dev/null || true
   xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
   xcrun simctl delete "$udid" >/dev/null 2>&1 || true
   say ""
 done
 
-say "=== raw markers seen, per runtime ==="
-for f in "$result_dir"/logs/*.log; do
-  [[ -e "$f" ]] || continue
-  say "--- $(basename "$f")"
-  grep -o "PROBE_[A-Z_]*[a-z_=]*" "$f" 2>/dev/null | sort | uniq -c | tee -a "$summary" || true
-done
 say "=== probe complete ==="
 exit $overall

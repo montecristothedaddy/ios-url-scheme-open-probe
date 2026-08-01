@@ -4,9 +4,26 @@
  *
  * It declares no entitlements, no app group, and deliberately no
  * LSApplicationQueriesSchemes entry, so canOpenURL is reported only for the record.
+ *
+ * Like the receiver, it records to a file in its own container so the harness can tell
+ * "the sender never ran" apart from "the sender ran and the open was blocked".
  */
 
 import UIKit
+
+func record(_ line: String) {
+  let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+  let file = dir.appendingPathComponent("probe-marker.txt")
+  let entry = line + "\n"
+  if let handle = try? FileHandle(forWritingTo: file) {
+    handle.seekToEndOfFile()
+    handle.write(Data(entry.utf8))
+    try? handle.close()
+  } else {
+    try? entry.write(to: file, atomically: true, encoding: .utf8)
+  }
+  NSLog("%@", line)
+}
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -23,17 +40,17 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     window?.makeKeyAndVisible()
 
     let raw = ProcessInfo.processInfo.environment["PROBE_TARGET_URL"] ?? "probeb://ping"
-    NSLog("PROBE_A launched target=%@", raw)
+    record("PROBE_A_LAUNCHED target=\(raw)")
 
     guard let url = URL(string: raw) else {
-      NSLog("PROBE_A invalid_url")
+      record("PROBE_A_INVALID_URL")
       return true
     }
-    NSLog("PROBE_A canOpenURL=%@", application.canOpenURL(url) ? "true" : "false")
+    record("PROBE_A_CANOPENURL=\(application.canOpenURL(url))")
 
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
       application.open(url, options: [:]) { accepted in
-        NSLog("PROBE_A open_accepted=%@", accepted ? "true" : "false")
+        record("PROBE_A_OPEN_ACCEPTED=\(accepted)")
       }
     }
     return true
