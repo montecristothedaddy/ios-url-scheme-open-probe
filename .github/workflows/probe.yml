@@ -1,0 +1,37 @@
+name: URL scheme open probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtimes:
+        description: 'Space separated iOS runtime substrings to test'
+        required: false
+        default: 'iOS-18-6 iOS-26-2'
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.3
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+      - name: List available simulator runtimes
+        run: xcrun simctl list runtimes available
+      - name: Run probe
+        env:
+          PROBE_RUNTIMES: ${{ inputs.runtimes }}
+        run: bash probe/run-probe.sh
+      - name: Show summary
+        if: always()
+        run: |
+          set +e
+          find probe/results -name 'PROBE-SUMMARY.txt' -exec cat {} \;
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-results
+          path: probe/results
+          if-no-files-found: warn
+          retention-days: 7
