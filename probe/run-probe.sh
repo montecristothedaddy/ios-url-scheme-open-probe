@@ -38,7 +38,8 @@ say ""
 # Build both apps once. The simulator SDK slice is shared across runtimes and both
 # bundles declare MinimumOSVersion 15.2.
 build_app() {
-  local name="$1" src="$2" plist="$3" dir="$work_dir/$name.app"
+  local name="$1" src="$2" plist="$3"
+  local dir="$work_dir/$name.app"
   mkdir -p "$dir"
   xcrun -sdk iphonesimulator swiftc -target "$(uname -m)-apple-ios15.2-simulator" \
     -parse-as-library -O -o "$dir/$name" "$src" > "$result_dir/logs/build-$name.log" 2>&1
