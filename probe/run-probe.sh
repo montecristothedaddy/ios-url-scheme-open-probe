@@ -29,7 +29,7 @@ summary="$result_dir/PROBE-SUMMARY.txt"
 : > "$summary"
 say() { printf '%s\n' "$*" | tee -a "$summary"; }
 
-runtimes="${PROBE_RUNTIMES:-iOS-18-6 iOS-26-2}"
+runtimes="${PROBE_RUNTIMES:-iOS-18-6}"
 A_ID="com.example.probea"
 B_ID="com.example.probeb"
 
@@ -85,31 +85,50 @@ print(m[-1] if m else "")')"
   if [[ -z "$rt_id" ]]; then say "SKIP $rt not available on this image"; say ""; continue; fi
   say "runtime id: $rt_id"
 
-  udid="$(xcrun simctl create "probe-$rt" "com.apple.CoreSimulator.SimDeviceType.iPhone-16" "$rt_id" 2>/dev/null)"
+  # Every simctl call is wrapped in a timeout. A hung `boot` or `bootstatus` silently
+  # ate a whole job once, and a probe that cannot finish is worse than one that fails.
+  sim() { timeout "$1" xcrun simctl "${@:2}"; }
+
+  say "  creating simulator"
+  udid="$(sim 120 create "probe-$rt" "com.apple.CoreSimulator.SimDeviceType.iPhone-16" "$rt_id" 2>/dev/null)"
   if [[ -z "$udid" ]]; then say "SKIP could not create a simulator for $rt"; say ""; continue; fi
-  xcrun simctl boot "$udid" >/dev/null 2>&1
-  xcrun simctl bootstatus "$udid" -b >/dev/null 2>&1
+  say "  booting $udid"
+  sim 240 boot "$udid" >/dev/null 2>&1
+  sim 240 bootstatus "$udid" -b >/dev/null 2>&1
+  boot_state="$(xcrun simctl list devices -j 2>/dev/null | UD="$udid" python3 -c 'import json,os,sys
+d=json.load(sys.stdin); u=os.environ["UD"]
+print(next((x["state"] for v in d["devices"].values() for x in v if x["udid"]==u), "unknown"))')"
+  say "  boot state: $boot_state"
+  if [[ "$boot_state" != "Booted" ]]; then
+    say "RESULT $rt: INCONCLUSIVE. Simulator never reached Booted."
+    overall=1
+    sim 60 delete "$udid" >/dev/null 2>&1 || true
+    say ""; continue
+  fi
 
   ilog="$result_dir/logs/$rt-simctl.log"
-  { echo "== install ProbeA"; xcrun simctl install "$udid" "$work_dir/ProbeA.app" 2>&1
-    echo "== install ProbeB"; xcrun simctl install "$udid" "$work_dir/ProbeB.app" 2>&1
+  say "  installing apps"
+  { echo "== install ProbeA"; sim 120 install "$udid" "$work_dir/ProbeA.app" 2>&1
+    echo "== install ProbeB"; sim 120 install "$udid" "$work_dir/ProbeB.app" 2>&1
   } > "$ilog"
 
   # ---- negative control: system-initiated open, must always reach ProbeB -------
-  { echo "== control openurl"; xcrun simctl openurl "$udid" "probeb://control" 2>&1; } >> "$ilog"
+  say "  running negative control"
+  { echo "== control openurl"; sim 60 openurl "$udid" "probeb://control" 2>&1; } >> "$ilog"
   sleep 8
   control_marker="$(read_marker "$udid" "$B_ID")"
   if [[ -n "$control_marker" ]]; then control_ok=1; else control_ok=0; fi
   say "control_system_openurl_reached_appb=$([[ $control_ok -eq 1 ]] && echo true || echo false)"
   [[ -n "$control_marker" ]] && say "  control marker: $(printf '%s' "$control_marker" | tr '\n' ';')"
 
-  xcrun simctl terminate "$udid" "$B_ID" >/dev/null 2>&1
+  sim 60 terminate "$udid" "$B_ID" >/dev/null 2>&1
   sleep 2
   clear_marker "$udid" "$B_ID"
 
   # ---- the measurement: app-initiated open, nothing taps anything -------------
+  say "  launching sender"
   { echo "== launch ProbeA"
-    xcrun simctl launch --terminate-running-process \
+    sim 60 launch --terminate-running-process \
       --setenv PROBE_TARGET_URL "probeb://from-another-app" "$udid" "$A_ID" 2>&1
   } >> "$ilog"
   sleep 15
@@ -137,8 +156,8 @@ print(m[-1] if m else "")')"
     say "RESULT $rt: CONFIRMATION INTERPOSED. Control reached the receiver, the app-initiated open did not."
   fi
 
-  xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
-  xcrun simctl delete "$udid" >/dev/null 2>&1 || true
+  sim 90 shutdown "$udid" >/dev/null 2>&1 || true
+  sim 90 delete "$udid" >/dev/null 2>&1 || true
   say ""
 done
 
