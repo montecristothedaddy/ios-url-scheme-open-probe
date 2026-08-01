@@ -89,9 +89,22 @@ print(m[-1] if m else "")')"
   # ate a whole job once, and a probe that cannot finish is worse than one that fails.
   sim() { timeout "$1" xcrun simctl "${@:2}"; }
 
-  say "  creating simulator"
-  udid="$(sim 120 create "probe-$rt" "com.apple.CoreSimulator.SimDeviceType.iPhone-16" "$rt_id" 2>/dev/null)"
-  if [[ -z "$udid" ]]; then say "SKIP could not create a simulator for $rt"; say ""; continue; fi
+  # Use a device the runner image already created for this runtime rather than
+  # creating one. `simctl create` is the step that failed and then hung across two
+  # earlier runs, and the image ships a full set of devices per runtime anyway.
+  say "  selecting a preinstalled device for $rt_id"
+  udid="$(xcrun simctl list devices available -j 2>/dev/null | RT="$rt_id" python3 -c '
+import json,os,sys
+d=json.load(sys.stdin); rt=os.environ["RT"]
+devs=d["devices"].get(rt,[])
+pref=[x for x in devs if "iPhone" in x.get("name","")] or devs
+print(pref[0]["udid"] if pref else "")')"
+  if [[ -z "$udid" ]]; then
+    say "SKIP no preinstalled device under $rt_id. Devices present:"
+    xcrun simctl list devices available 2>&1 | sed 's/^/    /' | tee -a "$summary"
+    say ""; continue
+  fi
+  say "  device: $udid"
   say "  booting $udid"
   sim 240 boot "$udid" >/dev/null 2>&1
   sim 240 bootstatus "$udid" -b >/dev/null 2>&1
@@ -102,7 +115,6 @@ print(next((x["state"] for v in d["devices"].values() for x in v if x["udid"]==u
   if [[ "$boot_state" != "Booted" ]]; then
     say "RESULT $rt: INCONCLUSIVE. Simulator never reached Booted."
     overall=1
-    sim 60 delete "$udid" >/dev/null 2>&1 || true
     say ""; continue
   fi
 
@@ -157,7 +169,6 @@ print(next((x["state"] for v in d["devices"].values() for x in v if x["udid"]==u
   fi
 
   sim 90 shutdown "$udid" >/dev/null 2>&1 || true
-  sim 90 delete "$udid" >/dev/null 2>&1 || true
   say ""
 done
 
