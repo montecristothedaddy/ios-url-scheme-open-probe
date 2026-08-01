@@ -28,3 +28,20 @@ log capture that was not running.
 
 Actions tab, "URL scheme open probe", Run workflow. Defaults to `iOS-18-6 iOS-26-2`.
 Results and per-runtime screenshots are uploaded as an artifact.
+
+## Status: apparatus not yet working
+
+As of 2026-08-01 this probe has **not produced a usable measurement**. On the `macos-15` runner the
+simulator never reaches `Booted`, on both `iOS-18-6` and `iOS-26-2`, whether the device is created
+with `simctl create` or taken from the preinstalled set. Every run therefore reports INCONCLUSIVE,
+which is the intended behaviour: the negative control refuses to let a broken apparatus be read as a
+platform result.
+
+**Do not read any past run of this repo as evidence that iOS does or does not confirm cross-app URL
+scheme opens.** The question is open.
+
+Next thing to try: stop driving the simulator with bare `simctl boot` plus `bootstatus`, and instead
+let `xcodebuild test -destination 'platform=iOS Simulator,...'` bring the simulator up, which is the
+path that demonstrably works on these runners. That means giving the probe a real Xcode project and
+an XCUITest rather than two hand-built `.app` bundles, which is more setup but uses the supported
+route.
