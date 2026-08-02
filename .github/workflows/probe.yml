@@ -11,13 +11,11 @@ on:
 jobs:
   probe:
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode 26.3
         run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
-      - name: List available simulator runtimes
-        run: xcrun simctl list runtimes available
       - name: Run probe
         env:
           PROBE_RUNTIMES: ${{ inputs.runtimes }}

@@ -1,8 +1,10 @@
-# iOS cross-app URL scheme open probe
+# iOS URL scheme delivery probe
 
-A small experiment: when one iOS app calls `UIApplication.open()` on **another** app's custom
-URL scheme, does the system interpose a user confirmation, and does the answer depend on the
-iOS version?
+Two questions about platform behaviour, one apparatus:
+
+1. When one iOS app calls `UIApplication.open()` on **another** app's custom URL scheme, does
+   the system interpose a user confirmation, and does the answer depend on the iOS version?
+2. Can a **web page** deliver the same custom-scheme URL, and does it need JavaScript to do it?
 
 ## Method
 
@@ -10,38 +12,54 @@ Two trivial apps, no entitlements, no app groups, no relationship to each other:
 
 - **ProbeA** calls `UIApplication.open()` exactly once, on `probeb://...`. It deliberately does
   not declare `LSApplicationQueriesSchemes`, so `canOpenURL` is reported only for the record.
-- **ProbeB** owns the `probeb` scheme and logs a distinctive marker when it is handed a URL.
+- **ProbeB** owns the `probeb` scheme and appends a marker line to a file in its own container
+  every time it is handed a URL.
 
-Nothing in the experiment taps anything, so the marker is the whole measurement:
+Nothing in the experiment taps anything, so for every arm the marker is the whole measurement:
 
 | Observation | Conclusion |
 |---|---|
 | marker present | the open completed on its own, no confirmation |
-| marker absent | something stopped it before ProbeB ran, a confirmation was interposed |
+| marker absent | something stopped it before ProbeB ran |
 
-Every runtime first runs a **negative control**: a system-initiated `simctl openurl`, which must
-always reach ProbeB. If the control fails, that runtime is reported INCONCLUSIVE rather than
-"confirmation", so an absent marker can never be blamed on a broken scheme registration or on
-log capture that was not running.
+### Arms
+
+| Arm | Sender | JavaScript needed |
+|---|---|---|
+| `arm1` | an unrelated installed app calling `UIApplication.open()` | no |
+| `/r302` | a plain HTTP 302 whose `Location` is the custom scheme | **no** |
+| `/meta` | `<meta http-equiv="refresh">` to the custom scheme | **no** |
+| `/js` | `location.href = ...` on load, no user gesture | yes |
+| `/iframe` | same, from inside a 1x1 subframe | yes |
+| `/link` | an ordinary anchor, which nothing taps | no |
+
+### Controls
+
+An absent marker must never be readable as a platform decision when the apparatus was simply
+broken, so every arm has its own control:
+
+- **app arm:** a system-initiated `simctl openurl` must reach ProbeB first.
+- **web arms:** the origin server's own request log must show the GET, which proves the browser
+  really loaded the page that was supposed to do the navigating.
+
+A failed control is reported `INCONCLUSIVE`, never as a platform result. The `/link` arm doubles
+as a sanity check on the whole rig: the page loads but nothing taps the link, so it should always
+report "page loaded, receiver NOT reached without a tap".
 
 ## Running it
 
-Actions tab, "URL scheme open probe", Run workflow. Defaults to `iOS-18-6 iOS-26-2`.
-Results and per-runtime screenshots are uploaded as an artifact.
+Actions tab, "URL scheme open probe", Run workflow. Defaults to `iOS-18-6 iOS-26-2`. Results,
+per-arm screenshots and the origin server's request log are uploaded as an artifact.
 
-## Status: apparatus not yet working
+## History, so nobody repeats it
 
-As of 2026-08-01 this probe has **not produced a usable measurement**. On the `macos-15` runner the
-simulator never reaches `Booted`, on both `iOS-18-6` and `iOS-26-2`, whether the device is created
-with `simctl create` or taken from the preinstalled set. Every run therefore reports INCONCLUSIVE,
-which is the intended behaviour: the negative control refuses to let a broken apparatus be read as a
-platform result.
+Runs before 2026-08-02 produced **no usable measurement** and every one of them self-reported
+`INCONCLUSIVE`. The cause was found on 2026-08-02 and it was entirely local to the harness:
+every `simctl` call was wrapped in `timeout`, **which macOS does not ship**, and stderr went to
+`/dev/null`. So `simctl boot` was never actually executed, `command not found` was invisible, the
+device stayed `Shutdown`, and the script correctly refused to call that a result. It was never
+evidence about iOS.
 
-**Do not read any past run of this repo as evidence that iOS does or does not confirm cross-app URL
-scheme opens.** The question is open.
-
-Next thing to try: stop driving the simulator with bare `simctl boot` plus `bootstatus`, and instead
-let `xcodebuild test -destination 'platform=iOS Simulator,...'` bring the simulator up, which is the
-path that demonstrably works on these runners. That means giving the probe a real Xcode project and
-an XCUITest rather than two hand-built `.app` bundles, which is more setup but uses the supported
-route.
+**Do not read any run before 2026-08-02 as evidence that iOS does or does not confirm cross-app
+URL scheme opens.** Do not reintroduce a bare `timeout`, and do not send simctl diagnostics to
+`/dev/null`.
