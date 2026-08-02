@@ -193,9 +193,27 @@ print(pref[0]["udid"] if pref else "")')"
   fi
 
   say "  installing apps"
-  { echo "== install ProbeA"; sim 120 install "$udid" "$work_dir/ProbeA.app"
-    echo "== install ProbeB"; sim 120 install "$udid" "$work_dir/ProbeB.app"
+  { echo "== install ProbeA"; sim 120 install "$udid" "$work_dir/ProbeA.app"; echo "rc=$?"
+    echo "== install ProbeB"; sim 120 install "$udid" "$work_dir/ProbeB.app"; echo "rc=$?"
   } >> "$ilog" 2>&1
+
+  # Prove the receiver actually runs and can write its marker before anything is measured.
+  # Without this, a silently non-starting app is indistinguishable from a platform refusal.
+  say "  self-test: launching the receiver directly"
+  { echo "== direct launch ProbeB"; sim 60 launch "$udid" "$B_ID"; echo "rc=$?"; } >> "$ilog" 2>&1
+  sleep 6
+  b_container="$(xcrun simctl get_app_container "$udid" "$B_ID" data 2>&1)"
+  { echo "== ProbeB data container: $b_container"
+    ls -la "$b_container" 2>&1
+    echo "-- Documents:"; ls -la "$b_container/Documents" 2>&1
+  } >> "$ilog" 2>&1
+  selftest="$(read_marker "$udid" "$B_ID")"
+  say "  selftest_receiver_wrote_marker=$([[ -n "$selftest" ]] && echo true || echo false)"
+  if [[ -z "$selftest" ]]; then
+    say "RESULT $rt: INCONCLUSIVE. The receiver does not run or cannot write its marker."
+    say "  diagnostics:"; sed 's/^/    /' "$ilog" | tee -a "$summary"
+    overall=1; say ""; continue
+  fi
 
   reset_arm() {
     sim 60 terminate "$udid" "$B_ID" >> "$ilog" 2>&1
