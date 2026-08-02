@@ -290,9 +290,12 @@ print(pref[0]["udid"] if pref else "")')"
   # ---- arm 1: app to app ------------------------------------------------------
   say "  arm 1: app-initiated open from an unrelated installed app"
   reset_arm
+  # simctl launch has no --setenv flag. Environment for the launched app is passed by
+  # prefixing the host environment with SIMCTL_CHILD_. Using --setenv made simctl read the
+  # flag as the device argument ("Invalid device: --setenv") and the sender never ran.
+  export SIMCTL_CHILD_PROBE_TARGET_URL="probeb://from-another-app"
   { echo "== launch ProbeA"
-    sim 60 launch --terminate-running-process \
-      --setenv "PROBE_TARGET_URL=probeb://from-another-app" "$udid" "$A_ID"
+    sim 60 launch --terminate-running-process "$udid" "$A_ID"
     echo "rc=$?"
   } >> "$ilog" 2>&1
   sender_marker="$(wait_marker "$udid" "$A_ID" 40)"
