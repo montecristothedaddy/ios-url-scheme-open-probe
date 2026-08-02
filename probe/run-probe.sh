@@ -254,10 +254,13 @@ print(pref[0]["udid"] if pref else "")')"
   fi
 
   reset_arm() {
-    sim 60 terminate "$udid" "$B_ID" >> "$ilog" 2>&1
-    sim 60 terminate "$udid" "$A_ID" >> "$ilog" 2>&1
-    sim 60 terminate "$udid" "com.apple.mobilesafari" >> "$ilog" 2>&1
-    sleep 2
+    sim 120 shutdown "$udid" >> "$ilog" 2>&1
+    sim 240 boot "$udid" >> "$ilog" 2>&1
+    for _ in $(seq 1 36); do
+      [[ "$(device_state "$udid")" == "Booted" ]] && break
+      sleep 5
+    done
+    sim 240 bootstatus "$udid" -b >> "$ilog" 2>&1
     clear_marker "$udid" "$B_ID"
     clear_marker "$udid" "$A_ID"
   }
@@ -289,7 +292,7 @@ print(pref[0]["udid"] if pref else "")')"
   reset_arm
   { echo "== launch ProbeA"
     sim 60 launch --terminate-running-process \
-      --setenv PROBE_TARGET_URL "probeb://from-another-app" "$udid" "$A_ID"
+      --setenv "PROBE_TARGET_URL=probeb://from-another-app" "$udid" "$A_ID"
     echo "rc=$?"
   } >> "$ilog" 2>&1
   sender_marker="$(wait_marker "$udid" "$A_ID" 40)"
