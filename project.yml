@@ -1,0 +1,62 @@
+# Real Xcode targets, on purpose.
+#
+# The earlier revision assembled the two .app bundles by hand: swiftc, then a copied Info.plist,
+# then an ad-hoc codesign. That works for the SENDER, which only calls UIApplication.open, but it
+# silently fails for the RECEIVER: `simctl listapps` showed the installed com.example.probeb record
+# with no CFBundleURLTypes at all, so LaunchServices never registered the `probeb` scheme, and
+# `simctl openurl probeb://...` returned success while delivering nothing. That is indistinguishable
+# from "the platform refused", which is exactly the confusion the controls exist to prevent.
+#
+# Building through xcodebuild is what actually registers a URL scheme.
+
+name: Probe
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "15.2"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    TARGETED_DEVICE_FAMILY: "1"
+
+targets:
+  ProbeA:
+    type: application
+    platform: iOS
+    sources:
+      - probe/AppA.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.probea
+    info:
+      path: generated/ProbeA-Info.plist
+      properties:
+        CFBundleDisplayName: ProbeA
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+
+  ProbeB:
+    type: application
+    platform: iOS
+    sources:
+      - probe/AppB.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.probeb
+    info:
+      path: generated/ProbeB-Info.plist
+      properties:
+        CFBundleDisplayName: ProbeB
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: com.example.probeb
+            CFBundleURLSchemes:
+              - probeb

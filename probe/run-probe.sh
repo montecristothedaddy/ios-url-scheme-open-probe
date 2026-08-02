@@ -140,24 +140,39 @@ fi
 say "origin server up on http://127.0.0.1:$WEB_PORT (scheme base ${SCHEME_BASE})"
 say ""
 
-# ---- build the two apps ------------------------------------------------------
-build_app() {
-  local name="$1" src="$2" plist="$3"
-  local dir="$work_dir/$name.app"
-  mkdir -p "$dir"
-  xcrun -sdk iphonesimulator swiftc -target "$(uname -m)-apple-ios15.2-simulator" \
-    -parse-as-library -O -o "$dir/$name" "$src" > "$result_dir/logs/build-$name.log" 2>&1
-  if [[ ! -f "$dir/$name" ]]; then
-    say "FATAL build failed for $name"
-    tail -20 "$result_dir/logs/build-$name.log" | tee -a "$summary"
+# ---- build the two apps, through xcodebuild ----------------------------------
+# See project.yml for why these must be real Xcode targets and not hand-assembled bundles.
+say "installing xcodegen"
+brew install xcodegen >> "$result_dir/logs/xcodegen-install.log" 2>&1
+if ! command -v xcodegen >/dev/null 2>&1; then
+  say "FATAL xcodegen unavailable"
+  tail -20 "$result_dir/logs/xcodegen-install.log" | sed 's/^/  /' | tee -a "$summary"
+  exit 1
+fi
+( cd "$root_dir/.." && xcodegen generate ) > "$result_dir/logs/xcodegen.log" 2>&1
+if [[ ! -d "$root_dir/../Probe.xcodeproj" ]]; then
+  say "FATAL xcodegen did not produce a project"
+  tail -20 "$result_dir/logs/xcodegen.log" | sed 's/^/  /' | tee -a "$summary"
+  exit 1
+fi
+
+dd="$work_dir/dd"
+for t in ProbeA ProbeB; do
+  xcodebuild -project "$root_dir/../Probe.xcodeproj" -scheme "$t" \
+    -sdk iphonesimulator -configuration Release -derivedDataPath "$dd" build \
+    > "$result_dir/logs/build-$t.log" 2>&1
+  app="$dd/Build/Products/Release-iphonesimulator/$t.app"
+  if [[ ! -d "$app" ]]; then
+    say "FATAL build failed for $t"
+    tail -25 "$result_dir/logs/build-$t.log" | sed 's/^/  /' | tee -a "$summary"
     exit 1
   fi
-  cp "$plist" "$dir/Info.plist"
-  codesign --force --sign - "$dir" >/dev/null 2>&1 || true
-  say "built $name"
-}
-build_app ProbeA "$root_dir/AppA.swift" "$root_dir/AppA-Info.plist"
-build_app ProbeB "$root_dir/AppB.swift" "$root_dir/AppB-Info.plist"
+  say "built $t"
+done
+appA="$dd/Build/Products/Release-iphonesimulator/ProbeA.app"
+appB="$dd/Build/Products/Release-iphonesimulator/ProbeB.app"
+say "receiver URL types as built:"
+/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes' "$appB/Info.plist" 2>&1 | sed 's/^/  /' | tee -a "$summary"
 say ""
 
 overall=0
@@ -206,13 +221,16 @@ print(pref[0]["udid"] if pref else "")')"
   fi
 
   say "  installing apps"
-  { echo "== install ProbeA"; sim 120 install "$udid" "$work_dir/ProbeA.app"; echo "rc=$?"
-    echo "== install ProbeB"; sim 120 install "$udid" "$work_dir/ProbeB.app"; echo "rc=$?"
+  { echo "== install ProbeA"; sim 120 install "$udid" "$appA"; echo "rc=$?"
+    echo "== install ProbeB"; sim 120 install "$udid" "$appB"; echo "rc=$?"
   } >> "$ilog" 2>&1
 
   # Did LaunchServices actually register the scheme? If it did not, an absent marker would be
   # our own packaging fault rather than anything the platform decided.
-  { echo "== listapps entry for ProbeB"
+  { echo "== installed ProbeB Info.plist URL types"
+    ib="$(xcrun simctl get_app_container "$udid" "$B_ID" app 2>&1)"
+    /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes' "$ib/Info.plist" 2>&1
+    echo "== listapps entry for ProbeB"
     xcrun simctl listapps "$udid" 2>/dev/null | grep -B4 -A24 "com.example.probeb" | head -60
   } >> "$ilog" 2>&1
 
