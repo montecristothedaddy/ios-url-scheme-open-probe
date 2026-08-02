@@ -51,14 +51,48 @@ report "page loaded, receiver NOT reached without a tap".
 Actions tab, "URL scheme open probe", Run workflow. Defaults to `iOS-18-6 iOS-26-2`. Results,
 per-arm screenshots and the origin server's request log are uploaded as an artifact.
 
+## Results, 2026-08-02
+
+Measured on **iOS 18.6** and **iOS 26.2**, each arm on a freshly restarted device, each with its own
+control:
+
+| Arm | Result |
+|---|---|
+| system `simctl openurl` of the custom scheme | `Open in "ProbeB"?` confirmation, on a clean home screen |
+| web page, HTTP 302, **no JavaScript** | `Open in "ProbeB"?` confirmation (18.6 and 26.2) |
+| web page, `location.href` on load, no gesture | `Open this page in "ProbeB"?` confirmation (18.6) |
+| web page with a link that nothing taps | nothing, the control |
+| an unrelated installed app calling `UIApplication.open` | confirmation interposed (26.2) |
+
+Three things follow.
+
+1. The confirmation is **not new in iOS 26**. iOS 18.6 does the same thing, so there is no
+   version of iOS in this matrix where a custom-scheme open is silent.
+2. A **web page can deliver a custom-scheme URL**, and it does not need JavaScript to do it: a plain
+   HTTP redirect is enough.
+3. The dialog is presented **by Safari** in the web arms and by SpringBoard in the system arm. A UI
+   test that queries only `springboard.buttons["Open"]` will miss the Safari one and wrongly record
+   "no confirmation shown". Nothing here was tapped, so whether the confirmation is charged once or
+   every time is still open.
+
 ## History, so nobody repeats it
 
 Runs before 2026-08-02 produced **no usable measurement** and every one of them self-reported
-`INCONCLUSIVE`. The cause was found on 2026-08-02 and it was entirely local to the harness:
-every `simctl` call was wrapped in `timeout`, **which macOS does not ship**, and stderr went to
-`/dev/null`. So `simctl boot` was never actually executed, `command not found` was invisible, the
-device stayed `Shutdown`, and the script correctly refused to call that a result. It was never
-evidence about iOS.
+`INCONCLUSIVE`. Four separate harness defects, none of them anything to do with iOS:
+
+1. Every `simctl` call was wrapped in `timeout`, **which macOS does not ship**, with stderr sent to
+   `/dev/null`. `simctl boot` was therefore never executed, `command not found` was invisible, and
+   the device stayed `Shutdown`.
+2. The receiver was a hand-assembled `.app`. `simctl listapps` showed it installed with **no
+   `CFBundleURLTypes`**, so LaunchServices never bound the scheme and `simctl openurl` returned
+   success while delivering nothing. Hand-built bundles are fine as senders, not as receivers. The
+   apps are now built with `xcodebuild`.
+3. An unanswered confirmation **persists indefinitely** and survived into the next arm, so a
+   screenshot could not be attributed to the arm that caused it. The device is now restarted between
+   arms.
+4. `simctl launch` has no `--setenv` flag; app environment is passed by prefixing the host
+   environment with `SIMCTL_CHILD_`. Using `--setenv` made simctl read the flag as the device
+   argument and the sender never ran.
 
 **Do not read any run before 2026-08-02 as evidence that iOS does or does not confirm cross-app
 URL scheme opens.** Do not reintroduce a bare `timeout`, and do not send simctl diagnostics to
