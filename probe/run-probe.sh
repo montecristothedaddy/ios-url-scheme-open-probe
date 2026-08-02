@@ -83,6 +83,19 @@ clear_marker() {
   return 0
 }
 
+# Poll for the marker instead of sleeping a fixed amount. These runners are slow enough that a
+# fixed wait turns "the platform refused" and "we did not wait long enough" into the same result,
+# which is exactly the confusion this apparatus exists to avoid.
+wait_marker() {
+  local udid="$1" bundle="$2" secs="$3" i m
+  for ((i = 0; i < secs; i += 2)); do
+    m="$(read_marker "$udid" "$bundle")"
+    if [[ -n "$m" ]]; then printf '%s' "$m"; return 0; fi
+    sleep 2
+  done
+  return 0
+}
+
 # grep -c prints 0 and exits non-zero when there is no match, so guard the value rather
 # than the exit status. An `|| echo 0` here would produce the string "0\n0".
 count_get() {
@@ -197,17 +210,24 @@ print(pref[0]["udid"] if pref else "")')"
     echo "== install ProbeB"; sim 120 install "$udid" "$work_dir/ProbeB.app"; echo "rc=$?"
   } >> "$ilog" 2>&1
 
+  # Did LaunchServices actually register the scheme? If it did not, an absent marker would be
+  # our own packaging fault rather than anything the platform decided.
+  { echo "== listapps entry for ProbeB"
+    xcrun simctl listapps "$udid" 2>/dev/null | grep -B4 -A24 "com.example.probeb" | head -60
+  } >> "$ilog" 2>&1
+
   # Prove the receiver actually runs and can write its marker before anything is measured.
   # Without this, a silently non-starting app is indistinguishable from a platform refusal.
   say "  self-test: launching the receiver directly"
-  { echo "== direct launch ProbeB"; sim 60 launch "$udid" "$B_ID"; echo "rc=$?"; } >> "$ilog" 2>&1
-  sleep 6
+  # `simctl launch` blocks until the app reports launch completion and routinely never
+  # returns on these runners, so cap it hard. The marker, not the exit code, is the signal.
+  { echo "== direct launch ProbeB"; sim 20 launch "$udid" "$B_ID"; echo "rc=$?"; } >> "$ilog" 2>&1
   b_container="$(xcrun simctl get_app_container "$udid" "$B_ID" data 2>&1)"
   { echo "== ProbeB data container: $b_container"
     ls -la "$b_container" 2>&1
     echo "-- Documents:"; ls -la "$b_container/Documents" 2>&1
   } >> "$ilog" 2>&1
-  selftest="$(read_marker "$udid" "$B_ID")"
+  selftest="$(wait_marker "$udid" "$B_ID" 30)"
   say "  selftest_receiver_wrote_marker=$([[ -n "$selftest" ]] && echo true || echo false)"
   if [[ -z "$selftest" ]]; then
     say "RESULT $rt: INCONCLUSIVE. The receiver does not run or cannot write its marker."
@@ -227,9 +247,8 @@ print(pref[0]["udid"] if pref else "")')"
   # ---- control: system-initiated open, must always reach ProbeB --------------
   say "  arm 0: negative control, system-initiated openurl"
   reset_arm
-  { echo "== control openurl"; sim 60 openurl "$udid" "probeb://control"; } >> "$ilog" 2>&1
-  sleep 8
-  control_marker="$(read_marker "$udid" "$B_ID")"
+  { echo "== control openurl"; sim 60 openurl "$udid" "probeb://control"; echo "rc=$?"; } >> "$ilog" 2>&1
+  control_marker="$(wait_marker "$udid" "$B_ID" 40)"
   if [[ -n "$control_marker" ]]; then control_ok=1; else control_ok=0; fi
   say "  control_system_openurl_reached_appb=$([[ $control_ok -eq 1 ]] && echo true || echo false)"
   if [[ $control_ok -eq 0 ]]; then
@@ -244,11 +263,11 @@ print(pref[0]["udid"] if pref else "")')"
   { echo "== launch ProbeA"
     sim 60 launch --terminate-running-process \
       --setenv PROBE_TARGET_URL "probeb://from-another-app" "$udid" "$A_ID"
+    echo "rc=$?"
   } >> "$ilog" 2>&1
-  sleep 15
+  sender_marker="$(wait_marker "$udid" "$A_ID" 40)"
+  recv_marker="$(wait_marker "$udid" "$B_ID" 25)"
   xcrun simctl io "$udid" screenshot "$result_dir/screenshots/$rt-arm1-app.png" >/dev/null 2>&1
-  sender_marker="$(read_marker "$udid" "$A_ID")"
-  recv_marker="$(read_marker "$udid" "$B_ID")"
   say "  sender_ran=$([[ -n "$sender_marker" ]] && echo true || echo false)"
   [[ -n "$sender_marker" ]] && say "    sender: $(printf '%s' "$sender_marker" | tr '\n' ';')"
   if [[ -z "$sender_marker" ]]; then
@@ -269,11 +288,10 @@ print(pref[0]["udid"] if pref else "")')"
     say "  web arm /$route ($label)"
     reset_arm
     before="$(count_get "$route")"
-    { echo "== openurl http /$route"; sim 60 openurl "$udid" "http://127.0.0.1:$WEB_PORT/$route"; } >> "$ilog" 2>&1
-    sleep 12
+    { echo "== openurl http /$route"; sim 60 openurl "$udid" "http://127.0.0.1:$WEB_PORT/$route"; echo "rc=$?"; } >> "$ilog" 2>&1
+    recv_marker="$(wait_marker "$udid" "$B_ID" 30)"
     xcrun simctl io "$udid" screenshot "$result_dir/screenshots/$rt-web-$route.png" >/dev/null 2>&1
     after="$(count_get "$route")"
-    recv_marker="$(read_marker "$udid" "$B_ID")"
     if [[ "$after" -le "$before" ]]; then
       say "  WEB/$route $rt: INCONCLUSIVE. The browser never fetched the page, so nothing was measured."
       overall=1
