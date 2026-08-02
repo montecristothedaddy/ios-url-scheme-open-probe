@@ -108,12 +108,20 @@ say ""
 
 # ---- origin server for the web arms -----------------------------------------
 web_log="$result_dir/logs/webserver.log"
-python3 "$root_dir/webserver.py" "$WEB_PORT" "$SCHEME_BASE" > "$web_log" 2>&1 &
+python3 -u "$root_dir/webserver.py" "$WEB_PORT" "$SCHEME_BASE" > "$web_log" 2>&1 &
 web_pid=$!
-sleep 2
-if ! curl -fsS --max-time 5 "http://127.0.0.1:$WEB_PORT/control" > /dev/null 2>&1; then
+# This runner is slow to start a fresh python3, and a fixed sleep raced it once.
+web_up=0
+for _ in $(seq 1 40); do
+  if curl -fsS --connect-timeout 2 --max-time 4 "http://127.0.0.1:$WEB_PORT/control" > /dev/null 2>&1; then
+    web_up=1; break
+  fi
+  sleep 2
+done
+if [[ $web_up -eq 0 ]]; then
   say "FATAL origin server did not come up on port $WEB_PORT"
-  sed 's/^/  /' "$web_log" | tee -a "$summary"
+  say "  server log:"; sed 's/^/    /' "$web_log" | tee -a "$summary"
+  say "  listeners:"; (lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | head -20 | sed 's/^/    /') | tee -a "$summary"
   exit 1
 fi
 say "origin server up on http://127.0.0.1:$WEB_PORT (scheme base ${SCHEME_BASE})"
