@@ -268,12 +268,21 @@ print(pref[0]["udid"] if pref else "")')"
   { echo "== control openurl"; sim 60 openurl "$udid" "probeb://control"; echo "rc=$?"; } >> "$ilog" 2>&1
   control_marker="$(wait_marker "$udid" "$B_ID" 40)"
   if [[ -n "$control_marker" ]]; then control_ok=1; else control_ok=0; fi
+  xcrun simctl io "$udid" screenshot "$result_dir/screenshots/$rt-arm0-control.png" >/dev/null 2>&1
   say "  control_system_openurl_reached_appb=$([[ $control_ok -eq 1 ]] && echo true || echo false)"
-  if [[ $control_ok -eq 0 ]]; then
-    say "RESULT $rt: INCONCLUSIVE. The negative control failed, so this runtime measures nothing."
-    say "  diagnostics:"; sed 's/^/    /' "$ilog" | tee -a "$summary"
-    overall=1; say ""; continue
-  fi
+  [[ $control_ok -eq 0 ]] && { say "  NOTE control failed. Every arm below is reported but none of them"
+                               say "       is a platform result until the control passes."; overall=1; }
+
+  # Independent apparatus check, and it does not involve our scheme at all: does openurl reach
+  # Safari for an http URL? That separates "openurl is broken" from "custom scheme dispatch is
+  # refused", which the custom-scheme control alone cannot distinguish.
+  say "  arm 0b: openurl control for http, Safari"
+  http_before="$(count_get control)"
+  { echo "== control openurl http"; sim 60 openurl "$udid" "http://127.0.0.1:$WEB_PORT/control"; echo "rc=$?"; } >> "$ilog" 2>&1
+  for _ in $(seq 1 15); do [[ "$(count_get control)" -gt "$http_before" ]] && break; sleep 2; done
+  xcrun simctl io "$udid" screenshot "$result_dir/screenshots/$rt-arm0b-http.png" >/dev/null 2>&1
+  http_after="$(count_get control)"
+  say "  control_openurl_http_reached_safari=$([[ "$http_after" -gt "$http_before" ]] && echo true || echo false)"
 
   # ---- arm 1: app to app ------------------------------------------------------
   say "  arm 1: app-initiated open from an unrelated installed app"
